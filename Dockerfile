@@ -3,6 +3,6 @@ COPY src/ ./src/
 COPY Cargo.lock ./
 COPY Cargo.toml ./
 RUN cargo build --release
-FROM gcr.io/distroless/static-debian10:latest
+FROM busybox:latest
 COPY --from=build ./target/release/galerians ./galerians
-ENTRYPOINT ["./galerians"]
+CMD ["./galerians"]
