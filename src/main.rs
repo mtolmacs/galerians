@@ -1,5 +1,6 @@
+use std::fs;
 use std::net::{ToSocketAddrs};
-use std::process::Command;
+use std::process;
 use std::{thread, time};
 use clap::{Arg, ArgGroup, App};
 use mysql::*;
@@ -56,25 +57,36 @@ impl Parameters {
           .short("p")
           .long("port")
           .takes_value(true)
-          .help("The Galera port on the nodes (defaults to 4567"))
+          .help("The Galera port on the nodes (defaults to 4567)"))
       .get_matches();
 
     Parameters {
       domain: args.value_of("domain")
                   .unwrap()
                   .to_owned(),
-      connstr: args.value_of("connection")
-                   .unwrap()
-                   .to_owned(),
-      frequency:  args.value_of("frequency")
-                      .unwrap_or("5")
-                      .parse::<u64>()
-                      .expect("Frequency has to be a positive number")
-                      .to_owned(),
+      connstr: match args.value_of("connection") {
+                Some(connection) => String::from(connection),
+                None => fs::read_to_string(args.value_of("file").unwrap())
+                              .unwrap_or_else(|error| {
+                                println!("File does not exist: {}", error);
+                                process::exit(1);
+                              }),
+              }.to_owned(),
+      frequency: args.value_of("frequency")
+                     .unwrap_or("5")
+                     .parse::<u64>()
+                     .unwrap_or_else(|_| {
+                        println!("Frequency has to be a positive number");
+                        process::exit(1);
+                     })
+                     .to_owned(),
       port: args.value_of("port")
                 .unwrap_or("4567")
                 .parse::<u32>()
-                .expect("Port has to be a valid port number")
+                .unwrap_or_else(|_| {
+                  println!("Port has to be a valid port number");
+                  process::exit(1);
+                })
                 .to_owned(),
       ignore_ips: Self::get_local_ips(),
     }
@@ -86,7 +98,7 @@ impl Parameters {
    * Original from https://github.com/ivanceras/machine-ip (MIT)
    */
   fn get_local_ips() -> Vec<String> {
-    let output = match Command::new("hostname").args(&["-I"]).output() {
+    let output = match process::Command::new("hostname").args(&["-I"]).output() {
       Ok(ok) => ok,
       Err(_) => {
         return vec![];
