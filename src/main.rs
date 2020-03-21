@@ -188,9 +188,8 @@ fn main() {
     let local_ip = poll_for_local_ip(&domain);
     args.ignore_ip(local_ip);
 
-    let update_query = "SET @@global.wsrep_cluster_address = ?";
-    let mut conn = get_mysql_conn(&args.connstr);
-
+    const UPDATE_QUERY: &'static str = "SET @@global.wsrep_cluster_address = ?";
+    
     let mut cluster_address = String::from("gcomm://");
 
     loop {
@@ -207,7 +206,8 @@ fn main() {
                     .collect();
                 let new_address = format!("gcomm://{}", addrs.join(","));
                 if new_address != cluster_address {
-                    match conn.exec_drop(update_query, (&new_address[..],)) {
+                    let mut conn = get_mysql_conn(&args.connstr);
+                    match conn.exec_drop(UPDATE_QUERY, (&new_address[..],)) {
                         Err(_error) => {
                             error!(target: "mysql", "Error executing cluster address update: {}", _error)
                         }
