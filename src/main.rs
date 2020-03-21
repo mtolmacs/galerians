@@ -4,7 +4,7 @@ use mysql::prelude::*;
 use mysql::*;
 use std::env;
 use std::fs;
-use std::net::ToSocketAddrs;
+use std::net::{ToSocketAddrs, UdpSocket};
 use std::process;
 use std::{thread, time};
 
@@ -108,34 +108,38 @@ impl Parameters {
                     process::exit(1);
                 })
                 .to_owned(),
-            ignore_ips: Self::get_local_ips(),
+            ignore_ips: vec![],
         }
     }
 
-    /*
-     * Get the IP(s) of the local machine.
+    /**
+     * Add an IP as a string to the Galera cluster address ignore list
      *
-     * Original from https://github.com/ivanceras/machine-ip (MIT)
      */
-    fn get_local_ips() -> Vec<String> {
-        let output = match process::Command::new("hostname").args(&["-I"]).output() {
-            Ok(ok) => ok,
-            Err(_) => {
-                return vec![];
-            }
-        };
-
-        let stdout = match String::from_utf8(output.stdout) {
-            Ok(ok) => ok,
-            Err(_) => {
-                return vec![];
-            }
-        };
-
-        let ips: Vec<&str> = stdout.trim().split(" ").collect::<Vec<&str>>();
-
-        return ips.into_iter().map(|ip| String::from(ip)).collect();
+    pub fn ignore_ip(&mut self, ip: String) {
+        self.ignore_ips.push(ip);
     }
+}
+
+/*
+ * Get the IP(s) of the local machine.
+ *
+ */
+fn get_local_ip(remote: &String) -> Option<String> {
+    let socket = match UdpSocket::bind("0.0.0.0:0") {
+        Ok(s) => s,
+        Err(_) => return None,
+    };
+
+    match socket.connect(remote) {
+        Ok(()) => (),
+        Err(_) => return None,
+    };
+
+    match socket.local_addr() {
+        Ok(addr) => return Some(addr.ip().to_string()),
+        Err(_) => return None,
+    };
 }
 
 /*
@@ -166,11 +170,18 @@ fn main() {
     env::set_var("RUST_LOG", "info");
     env_logger::init();
 
-    let args = Parameters::new();
+    let mut args = Parameters::new();
     let domain = format!("{}:{}", args.domain, args.port);
+    let local_ip = get_local_ip(&domain);
+    println!("My IP: {:?}", local_ip);
     let update_query = "SET @@global.wsrep_cluster_address = ?";
     let mut conn = get_mysql_conn(&args.connstr);
     let mut cluster_address = String::from("gcomm://");
+
+    match local_ip {
+        Some(ip) => args.ignore_ip(ip),
+        _ => (),
+    }
 
     loop {
         thread::sleep(time::Duration::from_secs(args.frequency));
