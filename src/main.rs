@@ -129,10 +129,27 @@ fn get_local_ip(remote: &String) -> Option<String> {
     return match TcpStream::connect(remote) {
         Ok(s) => match s.local_addr() {
             Ok(addr) => Some(addr.ip().to_string()),
-            Err(_e) => { println!("{:?}",_e); return None; },
+            Err(_e) => None,
         },
-        Err(_e) => { println!("{:?}",_e); return None; },
+        Err(_e) => None,
     };
+}
+
+fn poll_for_local_ip(remote: &String) -> String {
+    let mut ip = get_local_ip(remote);
+    while ip.is_none() {
+        thread::sleep(time::Duration::from_secs(1));
+        info!(target: "local", "Waiting for '{}' to come online...", remote);
+        ip = get_local_ip(remote);
+    }
+
+    let ret = ip.unwrap();
+
+    info!(
+        "My IP: {}  -  Adding it to the cluster address ignore list",
+        ret
+    );
+    return ret;
 }
 
 /*
@@ -168,21 +185,12 @@ fn main() {
     let domain = format!("{}:{}", args.domain, args.port);
     info!("Polling domain '{}'", domain);
 
-    let local_ip = get_local_ip(&domain);
-    match local_ip {
-        Some(ip) => {
-            info!(
-                "My IP: {}  -  Adding it to the cluster address ignore list",
-                ip
-            );
-            args.ignore_ip(ip);
-        }
-        _ => error!("No local IP detected!"),
-    }
-    
+    let local_ip = poll_for_local_ip(&domain);
+    args.ignore_ip(local_ip);
+
     let update_query = "SET @@global.wsrep_cluster_address = ?";
     let mut conn = get_mysql_conn(&args.connstr);
-    
+
     let mut cluster_address = String::from("gcomm://");
 
     loop {
