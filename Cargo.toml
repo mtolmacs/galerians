@@ -9,6 +9,8 @@ edition = "2018"
 [dependencies]
 mysql = "*"
 clap = "*"
+log = "*"
+env_logger = "*"
 
 [[bin]]
 name = "galerians"

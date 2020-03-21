@@ -1,6 +1,8 @@
 use clap::{App, Arg, ArgGroup};
+use log::{error, info};
 use mysql::prelude::*;
 use mysql::*;
+use std::env;
 use std::fs;
 use std::net::ToSocketAddrs;
 use std::process;
@@ -143,7 +145,7 @@ fn get_mysql_conn(mysql_str: &str) -> PooledConn {
     let mut pool_maybe = Pool::new(mysql_str);
     while pool_maybe.is_err() {
         thread::sleep(time::Duration::from_secs(1));
-        println!("Waiting for MySQL server to become available...");
+        info!(target: "mysql", "Waiting for MySQL server to become available...");
         pool_maybe = Pool::new(&mysql_str[..]);
     }
 
@@ -151,24 +153,28 @@ fn get_mysql_conn(mysql_str: &str) -> PooledConn {
     let mut conn = pool.get_conn();
     while conn.is_err() {
         thread::sleep(time::Duration::from_secs(1));
-        println!("Waiting for MySQL connection...");
+        info!(target: "mysql", "Waiting for MySQL connection...");
         conn = pool.get_conn();
     }
 
-    println!("MySQL connection successfully established!");
+    info!(target: "mysql", "MySQL connection successfully established!");
 
     return conn.unwrap();
 }
 
 fn main() {
+    env::set_var("RUST_LOG", "info");
+    env_logger::init();
+
     let args = Parameters::new();
+    let domain = format!("{}:{}", args.domain, args.port);
     let update_query = "SET @@global.wsrep_cluster_address = ?";
     let mut conn = get_mysql_conn(&args.connstr);
     let mut cluster_address = String::from("gcomm://");
 
     loop {
         thread::sleep(time::Duration::from_secs(args.frequency));
-        match format!("{}:{}", args.domain, args.port).to_socket_addrs() {
+        match domain.to_socket_addrs() {
             Ok(_iter) => {
                 let addrs: Vec<String> = _iter
                     .map(|item| item.ip().to_string())
@@ -182,10 +188,10 @@ fn main() {
                 if new_address != cluster_address {
                     match conn.exec_drop(update_query, (&new_address[..],)) {
                         Err(_error) => {
-                            println!("Error executing cluster address update: {}", _error)
+                            error!(target: "mysql", "Error executing cluster address update: {}", _error)
                         }
-                        Ok(_) => println!(
-                            "dynamic_galera_cluster: {} -> {}",
+                        Ok(_) => info!(target: "mysql",
+                            "{} -> {}",
                             cluster_address, new_address
                         ),
                     };
@@ -193,7 +199,7 @@ fn main() {
                     cluster_address = new_address;
                 }
             }
-            Err(_e) => println!("dynamic_galera_cluster: Unable to resolve domain: {:?}", _e),
+            Err(_e) => error!(target: "domain", "Unable to resolve domain '{}': {}", domain, _e),
         }
     }
 }
