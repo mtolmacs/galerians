@@ -79,7 +79,7 @@ impl Parameters {
             .get_matches();
 
         Parameters {
-            domain: args.value_of("domain").unwrap().to_owned(),
+            domain: args.value_of("domain").unwrap().trim().to_owned(),
             connstr: match args.value_of("connection") {
                 Some(connection) => String::from(connection),
                 None => {
