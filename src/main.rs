@@ -4,7 +4,7 @@ use mysql::prelude::*;
 use mysql::*;
 use std::env;
 use std::fs;
-use std::net::{ToSocketAddrs, UdpSocket};
+use std::net::{TcpStream, ToSocketAddrs};
 use std::process;
 use std::{thread, time};
 
@@ -126,19 +126,12 @@ impl Parameters {
  *
  */
 fn get_local_ip(remote: &String) -> Option<String> {
-    let socket = match UdpSocket::bind("0.0.0.0:0") {
-        Ok(s) => s,
-        Err(_) => return None,
-    };
-
-    match socket.connect(remote) {
-        Ok(()) => (),
-        Err(_) => return None,
-    };
-
-    match socket.local_addr() {
-        Ok(addr) => return Some(addr.ip().to_string()),
-        Err(_) => return None,
+    return match TcpStream::connect(remote) {
+        Ok(s) => match s.local_addr() {
+            Ok(addr) => Some(addr.ip().to_string()),
+            Err(_e) => { println!("{:?}",_e); return None; },
+        },
+        Err(_e) => { println!("{:?}",_e); return None; },
     };
 }
 
@@ -171,17 +164,26 @@ fn main() {
     env_logger::init();
 
     let mut args = Parameters::new();
+
     let domain = format!("{}:{}", args.domain, args.port);
+    info!("Polling domain '{}'", domain);
+
     let local_ip = get_local_ip(&domain);
-    println!("My IP: {:?}", local_ip);
+    match local_ip {
+        Some(ip) => {
+            info!(
+                "My IP: {}  -  Adding it to the cluster address ignore list",
+                ip
+            );
+            args.ignore_ip(ip);
+        }
+        _ => error!("No local IP detected!"),
+    }
+    
     let update_query = "SET @@global.wsrep_cluster_address = ?";
     let mut conn = get_mysql_conn(&args.connstr);
+    
     let mut cluster_address = String::from("gcomm://");
-
-    match local_ip {
-        Some(ip) => args.ignore_ip(ip),
-        _ => (),
-    }
 
     loop {
         thread::sleep(time::Duration::from_secs(args.frequency));
