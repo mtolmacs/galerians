@@ -2,11 +2,13 @@ use clap::{App, Arg, ArgGroup};
 use log::{error, info};
 use mysql::prelude::*;
 use mysql::*;
+use std::collections::HashMap;
 use std::env;
 use std::fs;
 use std::net::{TcpStream, ToSocketAddrs};
 use std::process;
-use std::{thread, time};
+use std::thread;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 struct Parameters {
     pub domain: String,
@@ -138,7 +140,7 @@ fn get_local_ip(remote: &String) -> Option<String> {
 fn poll_for_local_ip(remote: &String) -> String {
     let mut ip = get_local_ip(remote);
     while ip.is_none() {
-        thread::sleep(time::Duration::from_secs(1));
+        thread::sleep(Duration::from_secs(1));
         info!(target: "local", "Waiting for '{}' to come online...", remote);
         ip = get_local_ip(remote);
     }
@@ -158,7 +160,7 @@ fn poll_for_local_ip(remote: &String) -> String {
 fn get_mysql_conn(mysql_str: &str) -> PooledConn {
     let mut pool_maybe = Pool::new(mysql_str);
     while pool_maybe.is_err() {
-        thread::sleep(time::Duration::from_secs(1));
+        thread::sleep(Duration::from_secs(1));
         info!(target: "mysql", "Waiting for MySQL server to become available...");
         pool_maybe = Pool::new(&mysql_str[..]);
     }
@@ -166,7 +168,7 @@ fn get_mysql_conn(mysql_str: &str) -> PooledConn {
     let pool = pool_maybe.unwrap();
     let mut conn = pool.get_conn();
     while conn.is_err() {
-        thread::sleep(time::Duration::from_secs(1));
+        thread::sleep(Duration::from_secs(1));
         info!(target: "mysql", "Waiting for MySQL connection...");
         conn = pool.get_conn();
     }
@@ -189,23 +191,52 @@ fn main() {
     args.ignore_ip(local_ip);
 
     const UPDATE_QUERY: &'static str = "SET @@global.wsrep_cluster_address = ?";
-    
+
+    let mut cluster_changed = false;
     let mut cluster_address = String::from("gcomm://");
+    let mut cluster_addr_dict = HashMap::new();
 
     loop {
-        thread::sleep(time::Duration::from_secs(args.frequency));
+        let now: u64 = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs();
+
         match domain.to_socket_addrs() {
             Ok(_iter) => {
-                let addrs: Vec<String> = _iter
+                _iter
                     .map(|item| item.ip().to_string())
+                    // Filter out the ignore list
                     .filter(|item| match args.ignore_ips.iter().find(|&x| x == item) {
                         Some(_) => false,
                         None => true,
                     })
                     .map(|item| format!("{}:{}", item, args.port))
+                    // Update the cluster address directory
+                    .for_each(|item| {
+                        cluster_addr_dict.entry(item)
+                            .and_modify(|value| *value = now)
+                            .or_insert_with(|| {
+                                cluster_changed = true;
+                                return now;
+                            });
+                        
+                        return ();
+                    });
+
+                // Prune all stale entries
+                cluster_addr_dict = cluster_addr_dict.into_iter()
+                    .filter(|&(_, last_updated)| {
+                        if last_updated >= now - 1800 {    
+                            return true;
+                        }
+                        cluster_changed = true;
+
+                        return false;
+                    })
                     .collect();
-                let new_address = format!("gcomm://{}", addrs.join(","));
-                if new_address != cluster_address {
+
+                // Build the cluster URI from the rest
+                let addr_list = cluster_addr_dict.keys().map(|addr| addr.clone()).collect::<Vec<String>>();
+                let new_address = format!("gcomm://{}", addr_list.join(","));
+                if cluster_changed {
                     let mut conn = get_mysql_conn(&args.connstr);
                     match conn.exec_drop(UPDATE_QUERY, (&new_address[..],)) {
                         Err(_error) => {
@@ -218,9 +249,13 @@ fn main() {
                     };
 
                     cluster_address = new_address;
+                    cluster_changed = false;
                 }
             }
             Err(_e) => error!(target: "domain", "Unable to resolve domain '{}': {}", domain, _e),
         }
+
+        // Let's wait a little before we query the DNS again and update the live list
+        thread::sleep(Duration::from_secs(args.frequency));
     }
 }
